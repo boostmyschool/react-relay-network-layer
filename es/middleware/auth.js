@@ -1,0 +1,60 @@
+/* eslint-disable no-param-reassign, arrow-body-style, dot-notation */
+import { isFunction } from '../utils';
+
+class WrongTokenError extends Error {
+  constructor(msg, res) {
+    super(msg);
+    this.res = res;
+    this.name = 'WrongTokenError';
+  }
+
+}
+
+export default function authMiddleware(opts) {
+  const {
+    token: tokenOrThunk,
+    tokenRefreshPromise,
+    allowEmptyToken = false,
+    prefix = 'Bearer ',
+    header = 'Authorization'
+  } = opts || {};
+  let tokenRefreshInProgress = null;
+  return next => req => {
+    return new Promise((resolve, reject) => {
+      // $FlowFixMe
+      const token = isFunction(tokenOrThunk) ? tokenOrThunk(req) : tokenOrThunk;
+
+      if (!token && tokenRefreshPromise && !allowEmptyToken) {
+        reject(new WrongTokenError('Empty token'));
+      }
+
+      resolve(token);
+    }).then(token => {
+      if (token) {
+        req.headers[header] = `${prefix}${token}`;
+      }
+
+      return next(req);
+    }).catch(e => {
+      if (e && tokenRefreshPromise) {
+        if (e.message === 'Empty token' || e.fetchResponse && e.fetchResponse.status === 401) {
+          if (tokenRefreshPromise) {
+            if (!tokenRefreshInProgress) {
+              tokenRefreshInProgress = Promise.resolve(tokenRefreshPromise(req, e.fetchResponse)).then(newToken => {
+                tokenRefreshInProgress = null;
+                return newToken;
+              });
+            }
+
+            return tokenRefreshInProgress.then(newToken => {
+              req.headers[header] = `${prefix}${newToken}`;
+              return next(req); // re-run query with new token
+            });
+          }
+        }
+      }
+
+      throw e;
+    });
+  };
+}
